@@ -27,6 +27,8 @@ namespace PartyGame
         int _popupFrame;             // ignore keys on the frame a pop-up opened
         bool _inRoom;                // the room HUD is showing (not a menu page)
         bool _paused;                // Esc pause menu is open (time is stopped)
+        bool _offerUsed;             // this party's one intervention is spent
+        bool _offering;              // the talk panel is showing the list of things to offer
         bool _worldReady;
         HostController _host;
         readonly Dictionary<ActivityProp, GameObject> _markers = new Dictionary<ActivityProp, GameObject>();
@@ -159,16 +161,24 @@ namespace PartyGame
             }
             _popup = Popup.None;
             _talking = null;
+            _offering = false;
             ShowRoom();
         }
 
         // ================================================================ invite (phone)
 
+        string DeclineLine(GuestData g)
+        {
+            // Same line every time the phone panel redraws.
+            if (!content.dialogue.TryGet("Invite.Decline", out var lines) || lines.Count == 0) return "Maybe next time.";
+            return lines[Mathf.Abs(g.id.GetHashCode()) % lines.Count];
+        }
+
         void OpenPhone() => OpenPopup(Popup.Phone);
 
         void ToggleGuest(GuestData g)
         {
-            if (!_plan.guests.Remove(g) && _plan.guests.Count < _plan.occasion.guestCount) _plan.guests.Add(g);
+            if (!_plan.guests.Remove(g) && _plan.guests.Count < _plan.occasion.guestCount && WillCome(g)) _plan.guests.Add(g);
             ShowRoom();
         }
 
@@ -228,6 +238,8 @@ namespace PartyGame
         {
             _outcome = PartyScorer.Score(_plan, S);
             _round = 0;
+            _offerUsed = false;
+            _offering = false;
             _partyDiscoveries.Clear();
             _schedule.Clear();
             foreach (var go in _outcome.guests)
@@ -301,7 +313,65 @@ namespace PartyGame
         void OpenTalk(GuestData g)
         {
             _talking = g;
+            _offering = false;
             OpenPopup(Popup.Talk);
+        }
+
+        // ================================================================ intervention
+
+        bool CanOffer => _phase == Phase.Party && !_offerUsed && content.interventions.Count > 0;
+
+        /// <summary>Which scales an item nudges, e.g. "Small party, Wallflower".</summary>
+        static string ItemPush(InterventionItem item) => string.Join(", ", Axes.All
+            .Where(a => Mathf.Abs(item.push[a]) > 0.01f)
+            .Select(a => item.push[a] < 0 ? Axes.NegativePole(a) : Axes.PositivePole(a)));
+
+        /// <summary>
+        /// Design doc "Intervention": once per party, offer one guest something. It only affects that guest:
+        /// they like it if they lean the way it pushes, dislike it if they lean the other way, and say so.
+        /// Either way the player learns where they stand on the item's scales.
+        /// </summary>
+        void Offer(GuestData g, InterventionItem item)
+        {
+            if (!CanOffer || g == null) return;
+            _offerUsed = true;
+            _offering = false;
+
+            float value = 0f;
+            var axes = Axes.All.Where(a => Mathf.Abs(item.push[a]) > 0.01f).ToList();
+            foreach (var a in axes)
+            {
+                float stat = g.stats[a];
+                if (Mathf.Abs(stat) >= S.caresThreshold) value += item.push[a] * stat * S.interventionScale;
+            }
+            value = Mathf.Clamp(value, -S.interventionMax, S.interventionMax);
+            string key = value > 0.05f ? "Offer.Good" : value < -0.05f ? "Offer.Bad" : "Offer.Meh";
+
+            // It changes their mood from this round on, and counts toward their stars.
+            if (key != "Offer.Meh")
+            {
+                var reason = new Reason { key = key, value = value, axis = axes.OrderByDescending(a => Mathf.Abs(g.stats[a])).First() };
+                var outcome = _outcome.For(g);
+                outcome.happiness += value;
+                outcome.reasons.Add(reason);
+                _schedule[g][_round].Add(reason);
+            }
+
+            var learned = new List<string>();
+            foreach (var a in axes)
+                if (_knowledge.Reveal(g, a))
+                {
+                    string text = $"{Axes.Describe(a, g.stats[a])} ({a})";
+                    learned.Add(text);
+                    _partyDiscoveries.Add(new Discovery { guest = g, text = text + "  (offer)", axis = a });
+                }
+            SaveLearned();
+
+            string note = learned.Count > 0 ? "Learned: " + string.Join(", ", learned) : "Nothing new, but now you're sure.";
+            _bubbles[g] = $"({item.displayName}) " + _picker.Pick(key, g, null) +
+                          $"\n<color=#8a7f76><size=20>{note}</size></color>";
+            _talking = g;
+            ShowRoom();
         }
 
         bool CanChat(GuestData g) => _chatsLeft > 0 && !_chattedThisRound.Contains(g);
@@ -334,7 +404,7 @@ namespace PartyGame
                 _knowledge.Reveal(g, axis);
                 SaveLearned();
                 string learned = $"{Axes.Describe(axis, g.stats[axis])} ({axis})";
-                _partyDiscoveries.Add(new Discovery { guest = g, text = learned + "  (chat)" });
+                _partyDiscoveries.Add(new Discovery { guest = g, text = learned + "  (chat)", axis = axis });
                 _bubbles[g] = _picker.ForReveal(g, axis, S.caresThreshold) +
                               $"\n<color=#8a7f76><size=20>Learned: {learned}</size></color>";
             }
@@ -346,7 +416,7 @@ namespace PartyGame
         void LearnFrom(GuestData g, Reason r)
         {
             if (r.axis.HasValue && _knowledge.Reveal(g, r.axis.Value))
-                _partyDiscoveries.Add(new Discovery { guest = g, text = $"{Axes.Describe(r.axis.Value, g.stats[r.axis.Value])} ({r.axis.Value})" });
+                _partyDiscoveries.Add(new Discovery { guest = g, text = $"{Axes.Describe(r.axis.Value, g.stats[r.axis.Value])} ({r.axis.Value})", axis = r.axis.Value });
             if (r.trait.HasValue && _knowledge.Reveal(g, r.trait.Value))
                 _partyDiscoveries.Add(new Discovery { guest = g, text = IsA(r.trait.Value) });
             if (r.key == "Dislike.Bad" && _knowledge.RevealDislike(g))
@@ -370,10 +440,19 @@ namespace PartyGame
             if (_paused || _popup == Popup.None || Time.frameCount == _popupFrame) return;
 
             bool close = Input.GetKeyDown(KeyCode.E) || Input.GetKeyDown(KeyCode.Space);
-            if (_popup == Popup.Talk)
+            if (_popup == Popup.Talk && _offering)
+            {
+                // Number keys pick an item; E goes back to the conversation.
+                var items = content.interventions;
+                for (int i = 0; i < items.Count && i < 9; i++)
+                    if (Input.GetKeyDown(KeyCode.Alpha1 + i)) { Offer(_talking, items[i]); return; }
+                if (close) { _offering = false; ShowRoom(); }
+            }
+            else if (_popup == Popup.Talk)
             {
                 if (Input.GetKeyDown(KeyCode.Alpha1) && _talking != null) Chat(_talking);
-                else if (close || Input.GetKeyDown(KeyCode.Alpha2)) ClosePopup();
+                else if (Input.GetKeyDown(KeyCode.Alpha2) && CanOffer) { _offering = true; _popupFrame = Time.frameCount; ShowRoom(); }
+                else if (close) ClosePopup();
             }
             else if (close) ClosePopup();
         }
@@ -625,7 +704,7 @@ namespace PartyGame
                 case Phase.Party:
                     float avg = _plan.guests.Average(g => MoodAt(g, _round));
                     UIKit.Label(goal.transform, "Walk up to a guest and press E to talk. Change the record on the <b>record player</b> (next to the door) for the next round.", 22);
-                    UIKit.Label(goal.transform, $"Round <b>{_round + 1} / {occ.rounds}</b>   ·   Chats left <b>{_chatsLeft}</b>   ·   Mood {UIKit.MoodFace(avg)}", 22);
+                    UIKit.Label(goal.transform, $"Round <b>{_round + 1} / {occ.rounds}</b>   ·   Chats left <b>{_chatsLeft}</b>   ·   Offer {(_offerUsed ? "used" : "<b>1</b> left")}   ·   Mood {UIKit.MoodFace(avg)}", 22);
                     if (_chatsLeft <= 0)
                         UIKit.Label(goal.transform, _round >= occ.rounds - 1
                             ? "<b>No chats left.</b> Use the record player to wrap up the party."
@@ -809,23 +888,29 @@ namespace PartyGame
             UIKit.Label(panel, "Phone", 22, UIKit.Muted);
             UIKit.Label(panel, "Contacts", 44, null, TextAnchor.UpperLeft, FontStyle.Bold);
             UIKit.Label(panel, $"Invite {occ.guestCount} for {occ.title}.   Invited <b>{_plan.guests.Count} / {occ.guestCount}</b>", 22, UIKit.Muted);
+            var legend = UIKit.Row(panel, 8, TextAnchor.MiddleLeft);
+            UIKit.Icon(legend, UIKit.HeartSprite, UIKit.HeartColor, 18);
+            UIKit.Size(UIKit.Label(legend, "<b>Willingness</b>: how keen they are to come. A good party adds a heart, a bad one costs one; at 0 they skip a party.", 17, UIKit.Muted), 540);
 
             foreach (var g in AvailableGuests())
             {
                 bool selected = _plan.guests.Contains(g);
                 bool isNew = _partyIndex > 0 && g.availableFrom == _partyIndex;
-                var contact = UIKit.Panel(panel, selected ? UIKit.CardSelected : Color.white, "Contact");
+                bool willCome = WillCome(g);
+                var contact = UIKit.Panel(panel, selected ? UIKit.CardSelected : willCome ? Color.white : new Color(0.93f, 0.91f, 0.89f), "Contact");
                 UIKit.HLayout(contact, 12, 8, TextAnchor.MiddleLeft);
                 var avatar = UIKit.Panel(contact.transform, g.color, "Avatar");
                 UIKit.Size(avatar, 40, 40);
                 var info = UIKit.Column(contact.transform, 0);
                 UIKit.Size(info, 340, -1, 1);
                 string badge = isNew ? "   <color=#db6b4d><size=15>NEW</size></color>" : "";
-                UIKit.Label(info, $"<b>{g.displayName}</b>{badge}", 22);
-                UIKit.Label(info, KnownSummary(g), 16, UIKit.Muted);
+                var nameRow = UIKit.Row(info, 10, TextAnchor.MiddleLeft);
+                UIKit.Label(nameRow, $"<b>{g.displayName}</b>{badge}", 22);
+                WillingnessPips(nameRow, g, 13);
+                UIKit.Label(info, willCome ? KnownSummary(g) : $"<i>“{DeclineLine(g)}”</i>", 16, UIKit.Muted);
                 var guest = g;
-                UIKit.Button(contact.transform, selected ? "Cancel" : "Invite", () => ToggleGuest(guest), 120, 44,
-                    selected || _plan.guests.Count < occ.guestCount, selected ? UIKit.Muted : UIKit.Accent, 20);
+                UIKit.Button(contact.transform, selected ? "Cancel" : willCome ? "Invite" : "Busy", () => ToggleGuest(guest), 120, 44,
+                    selected || (willCome && _plan.guests.Count < occ.guestCount), selected ? UIKit.Muted : UIKit.Accent, 20);
             }
 
             bool full = _plan.guests.Count == occ.guestCount;
@@ -846,9 +931,19 @@ namespace PartyGame
             UIKit.Label(head, g.displayName, 40, null, TextAnchor.MiddleLeft, FontStyle.Bold);
             MoodBar(panel, mood);
 
+            if (_offering)
+            {
+                OfferList(panel, g);
+                return;
+            }
+
             var bubble = UIKit.Panel(panel, Color.white, "Bubble");
             UIKit.VLayout(bubble, 0, 18);
             UIKit.Label(bubble.transform, "“" + _bubbles[g] + "”", 26);
+            string notes = GuessNotes(g);
+            if (notes.Length > 0) UIKit.Label(panel, $"<i>Your guestbook notes: {notes}</i>", 18, UIKit.Muted);
+            else if (_knowledge.UnknownAxes(g).Any())
+                UIKit.Label(panel, "<i>Think you know what they like? Write a guess in your guestbook.</i>", 18, UIKit.Muted);
 
             // Why their mood changed this round, in words (green = made them happier, red = less happy).
             var now = _schedule[g][_round];
@@ -874,13 +969,40 @@ namespace PartyGame
                     ? "That was your last chat. Go to the record player to wrap up the party."
                     : $"That was your last chat this round. Go to the record player to start round {_round + 2}.",
                     20, UIKit.Accent, TextAnchor.UpperLeft, FontStyle.Bold);
+            UIKit.Button(panel, _offerUsed ? "Already offered something this party" : "[2]  Offer something  (once per party)",
+                () => { _offering = true; ShowRoom(); }, 576, 52, CanOffer, new Color(0.45f, 0.6f, 0.75f), 22);
+            if (_knowledge.UnknownAxes(g).Any())
+                UIKit.Button(panel, "Guestbook: write a guess", () => { ClosePopup(); ShowFriends(guest, ShowRoom); }, 576, 46, true,
+                    new Color(0.72f, 0.68f, 0.64f), 20);
             UIKit.Button(panel, "[E]  Bye", ClosePopup, 576, 52, true, UIKit.Muted, 22);
         }
 
+        /// <summary>The talk panel while choosing what to offer: one button per item, with the way it pushes.</summary>
+        void OfferList(Transform panel, GuestData g)
+        {
+            UIKit.Label(panel, $"Offer {g.displayName} something", 28, null, TextAnchor.UpperLeft, FontStyle.Bold);
+            UIKit.Label(panel, "Only once per party, and only for this guest. If it suits them they get happier, if not, less happy. Either way you learn where they stand.",
+                18, UIKit.Muted);
+            var items = content.interventions;
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                string key = i < 9 ? $"[{i + 1}]  " : "";
+                UIKit.Button(panel, $"{key}<b>{item.displayName}</b>   <size=17>({ItemPush(item)})</size>",
+                    () => Offer(g, item), 576, 46, true, new Color(0.45f, 0.6f, 0.75f), 20);
+            }
+            UIKit.Button(panel, "[E]  Back", () => { _offering = false; ShowRoom(); }, 576, 48, true, UIKit.Muted, 22);
+        }
+
+        /// <summary>"Mood tonight" bar: how much fun this guest is having right now. Resets every party.</summary>
         static void MoodBar(Transform parent, float mood)
         {
-            var bar = UIKit.Panel(parent, UIKit.AccentDim, "MoodBar");
-            UIKit.Size(bar, -1, 12);
+            var row = UIKit.Row(parent, 12, TextAnchor.MiddleLeft);
+            UIKit.Label(row, "<b>Mood tonight</b>", 20, UIKit.Muted);
+            var bar = UIKit.Panel(row, UIKit.AccentDim, "MoodBar");
+            UIKit.Size(bar, -1, 16, 1);
+            string word = mood >= 4.2f ? "loving it" : mood >= 3.4f ? "having fun" : mood >= 2.6f ? "it's okay" : mood >= 1.8f ? "a bit bored" : "not enjoying it";
+            UIKit.Label(row, word, 20, UIKit.MoodColor(mood), TextAnchor.MiddleLeft, FontStyle.Bold);
             var fill = UIKit.Panel(bar.transform, UIKit.MoodColor(mood), "Fill");
             fill.rectTransform.anchorMin = Vector2.zero;
             fill.rectTransform.anchorMax = new Vector2(Mathf.InverseLerp(1f, 5f, mood), 1f);

@@ -18,8 +18,31 @@ namespace PartyGame
             c.guests = BuildGuests();
             c.activities = BuildActivities();
             c.dialogue = BuildDialogue();
+            c.interventions = BuildInterventions();
             return c;
         }
+
+        // ---------------------------------------------------------------- interventions
+        // The doc lists one so far ("A book - boosts introvert/small party"); the rest are placeholders,
+        // one for each side of the five scales.
+
+        static List<InterventionItem> BuildInterventions()
+        {
+            return new List<InterventionItem>
+            {
+                Item("book", "A good book", "Somewhere quiet to read.", new AxisValues(crowd: -1f, social: -1f, tone: 0, structure: 0, formality: 0)),
+                Item("introduce", "Introduce them around", "Bring them over to meet everyone.", new AxisValues(tone: 0, structure: 0, crowd: 1f, formality: 0, social: 1f)),
+                Item("game", "A silly party game", "Get them laughing.", new AxisValues(tone: 1f, structure: 0, crowd: 0, formality: 0, social: 0)),
+                Item("talk", "A heart-to-heart", "Sit down for a real conversation.", new AxisValues(tone: -1f, structure: 0, crowd: 0, formality: 0, social: 0)),
+                Item("task", "A little project", "Ask them to help with something hands-on.", new AxisValues(tone: 0, structure: 1f, crowd: 0, formality: 0, social: 0)),
+                Item("sofa", "A comfy spot to hang out", "No plans, just relax.", new AxisValues(tone: 0, structure: -1f, crowd: 0, formality: 0, social: 0)),
+                Item("fancy", "A fancy drink", "Something classy, in the good glasses.", new AxisValues(tone: 0, structure: 0, crowd: 0, formality: -1f, social: 0)),
+                Item("slippers", "Cozy slippers", "Shoes off, feet up.", new AxisValues(tone: 0, structure: 0, crowd: 0, formality: 1f, social: 0)),
+            };
+        }
+
+        static InterventionItem Item(string id, string name, string desc, AxisValues push) =>
+            new InterventionItem { id = id, displayName = name, description = desc, push = push };
 
         // ---------------------------------------------------------------- occasions
 
@@ -27,18 +50,20 @@ namespace PartyGame
         {
             return new List<OccasionData>
             {
-                // Level 0 task from the spreadsheet's Levels sheet. Levels 1 and 2 have no task yet.
+                // Design doc game loop: Level 1 Tea Party, Level 2 Watch Party, Level 3 "could be: Dinner Party,
+                // Birthday, Personal Celebration, Holiday specific" (Dinner Party until the team picks).
+                // Descriptions, vibes, guest counts and budgets are placeholders.
                 Occasion("teaparty", "Tea Party",
                     "A cozy afternoon tea. A little bit proper, a lot of chatting. Invite 3 friends.",
                     new AxisValues(tone: 0, structure: 0, crowd: 0, formality: -1f, social: 1f),
                     guests: 3, budget: 4),
-                Occasion("bookswap", "Book Swap Evening",
-                    "A quiet, grown-up evening of swapping favourite books. Invite 4 friends.",
-                    new AxisValues(tone: -1f, structure: 0.5f, crowd: 0, formality: -1f, social: -0.5f),
+                Occasion("watchparty", "Watch Party",
+                    "Movie night on the sofa: snacks, laughs and a screen everyone can see. Invite 4 friends.",
+                    new AxisValues(tone: 1f, structure: 0.5f, crowd: 0, formality: 1f, social: 0),
                     guests: 4, budget: 5),
-                Occasion("housewarming", "Your Housewarming",
-                    "Your new place, all your friends. Introverts and extroverts alike. Invite 5.",
-                    new AxisValues(tone: 0, structure: 0, crowd: 0, formality: 0.5f, social: 0),
+                Occasion("dinnerparty", "Dinner Party",
+                    "A proper sit-down dinner. Good food and good conversation. Invite 5 friends.",
+                    new AxisValues(tone: -0.5f, structure: 0.5f, crowd: 0, formality: -1f, social: 0.5f),
                     guests: 5, budget: 6),
             };
         }
@@ -131,7 +156,8 @@ namespace PartyGame
                     new AxisValues(tone: 0, structure: -0.5f, crowd: 0, formality: 1f, social: 0)),
                 Activity("bookclub", "Book Club", "A book to talk about.", 2,
                     new AxisValues(tone: -1f, structure: 0.5f, crowd: 0, formality: -1.5f, social: 0)),
-                Activity("watch", "Watch Party", "Put a movie on.", 0,
+                // Was "Watch Party"; renamed now that Watch Party is the Level 2 occasion.
+                Activity("watch", "Movie Corner", "Put a movie on.", 0,
                     new AxisValues(tone: 1f, structure: 0, crowd: 0, formality: 0.5f, social: 0.5f)),
             };
         }
@@ -253,6 +279,16 @@ namespace PartyGame
             Reveal(d, PartyAxis.Social, -1, "I'm more of a corner-of-the-room person.");
             d.Add("Reveal.Nothing", "I'm pretty easy-going about that, honestly.");
             d.Add("Reveal.Done", "Ha, you already know me too well!");
+
+            // Interventions (design doc: once per party, one guest, they say how well it worked)
+            d.Add("Offer.Good", "Oh, this is exactly what I needed!", "You know me so well. Thank you!");
+            d.Add("Offer.Bad", "Um... thanks, I guess?", "That's... not really my thing.");
+            d.Add("Offer.Meh", "Oh, that's nice. Thanks!", "Sure, why not.");
+            d.Add("Label.Offer.Good", "Loved what you offered");
+            d.Add("Label.Offer.Bad", "Didn't like what you offered");
+
+            // Willingness: said on the phone when they don't want to come
+            d.Add("Invite.Decline", "Sorry, I think I'll sit this one out.", "Ah, I'm busy that day. Maybe next time?");
 
             return d;
         }

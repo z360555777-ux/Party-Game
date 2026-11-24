@@ -34,6 +34,8 @@ namespace PartyGame
         public bool dislike;
         public bool diet;
         public List<PartyRecord> parties = new List<PartyRecord>();
+        public int willingness = -1;                  // -1: older saves without it, use the starting value
+        public List<int> guesses = new List<int>();   // the player's own notes, one Guess per PartyAxis
     }
 
     [Serializable]

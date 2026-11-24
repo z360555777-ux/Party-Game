@@ -267,16 +267,97 @@ namespace PartyGame
             else Size(rt, -1, -1, 1, 1);
         }
 
-        /// <summary>A row of small squares: filled for each star earned.</summary>
+        public static readonly Color StarColor = new Color(1f, 0.72f, 0.15f);
+        public static readonly Color HeartColor = new Color(0.9f, 0.35f, 0.45f);
+        public static readonly Color EmptyIcon = new Color(0.84f, 0.8f, 0.76f);
+
+        /// <summary>A row of star shapes: filled for each star earned (how much fun they had).</summary>
         public static RectTransform Stars(Transform parent, int stars, int max = 5, float size = 26)
         {
-            var row = Row(parent, 6, TextAnchor.MiddleLeft);
-            for (int i = 0; i < max; i++)
-            {
-                var s = Panel(row, i < stars ? new Color(1f, 0.75f, 0.2f) : AccentDim, "Star");
-                Size(s, size, size);
-            }
+            return Icons(parent, StarSprite, stars, max, size, StarColor, "Star");
+        }
+
+        /// <summary>A row of hearts: filled for each Willingness point left.</summary>
+        public static RectTransform Hearts(Transform parent, int hearts, int max, float size = 22)
+        {
+            return Icons(parent, HeartSprite, hearts, max, size, HeartColor, "Heart");
+        }
+
+        /// <summary>One small icon image (a star or heart) in the given colour.</summary>
+        public static Image Icon(Transform parent, Sprite sprite, Color color, float size)
+        {
+            var img = Panel(parent, color, "Icon");
+            img.sprite = sprite;
+            img.preserveAspect = true;
+            Size(img, size, size);
+            return img;
+        }
+
+        static RectTransform Icons(Transform parent, Sprite sprite, int filled, int max, float size, Color on, string name)
+        {
+            var row = Row(parent, Mathf.Max(2, size * 0.15f), TextAnchor.MiddleLeft);
+            for (int i = 0; i < max; i++) Icon(row, sprite, i < filled ? on : EmptyIcon, size).name = name;
             return row;
+        }
+
+        static Sprite _star, _heart;
+        public static Sprite StarSprite => _star != null ? _star : (_star = ShapeSprite(InStar));
+        public static Sprite HeartSprite => _heart != null ? _heart : (_heart = ShapeSprite(InHeart));
+
+        // x, y in [-1, 1], y up.
+        static bool InHeart(float x, float y)
+        {
+            x *= 1.2f; y = y * 1.2f + 0.15f;
+            float a = x * x + y * y - 1f;
+            return a * a * a - x * x * y * y * y <= 0f;
+        }
+
+        static readonly Vector2[] StarPoly = BuildStar();
+        static Vector2[] BuildStar()
+        {
+            var p = new Vector2[10];
+            for (int i = 0; i < 10; i++)
+            {
+                float r = i % 2 == 0 ? 1f : 0.45f;
+                float ang = Mathf.PI / 2 + i * Mathf.PI / 5;
+                p[i] = new Vector2(Mathf.Cos(ang) * r, Mathf.Sin(ang) * r - 0.08f);
+            }
+            return p;
+        }
+
+        static bool InStar(float x, float y)
+        {
+            bool inside = false;
+            for (int i = 0, j = StarPoly.Length - 1; i < StarPoly.Length; j = i++)
+            {
+                var a = StarPoly[i]; var b = StarPoly[j];
+                if ((a.y > y) != (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+            }
+            return inside;
+        }
+
+        /// <summary>White shape on transparent, anti-aliased by 4x4 supersampling, tinted by Image.color.</summary>
+        static Sprite ShapeSprite(Func<float, float, bool> inside)
+        {
+            const int N = 64, S = 4;
+            var tex = new Texture2D(N, N, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
+            var px = new Color32[N * N];
+            for (int y = 0; y < N; y++)
+            for (int x = 0; x < N; x++)
+            {
+                int hits = 0;
+                for (int sy = 0; sy < S; sy++)
+                for (int sx = 0; sx < S; sx++)
+                {
+                    float fx = (x + (sx + 0.5f) / S) / N * 2f - 1f;
+                    float fy = (y + (sy + 0.5f) / S) / N * 2f - 1f;
+                    if (inside(fx, fy)) hits++;
+                }
+                px[y * N + x] = new Color32(255, 255, 255, (byte)(255 * hits / (S * S)));
+            }
+            tex.SetPixels32(px);
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0, 0, N, N), new Vector2(0.5f, 0.5f), 100);
         }
 
         /// <summary>Colour for a happiness value from 1 (bad) to 5 (great).</summary>
